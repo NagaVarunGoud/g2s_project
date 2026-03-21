@@ -15,8 +15,9 @@ if not has_display_env or headless_forced:
 
 # Reduce noisy backend logs from OpenCV / TF / MediaPipe runtime.
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("GLOG_minloglevel", "3")
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "3")
 
 import cv2
 import mediapipe as mp
