@@ -4,7 +4,6 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import joblib
-import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 SAVE_PATH = os.path.join(BASE_DIR, "dataset.pkl")
@@ -37,13 +36,11 @@ dataset, labels = [], []
 
 sentences = input("Enter sentences (comma separated): ").split(",")
 
-allow_headless = os.environ.get("G2S_HEADLESS", "0") == "1"
 has_display = bool(os.environ.get("DISPLAY"))
-if not has_display and not allow_headless:
-    print("No DISPLAY detected, so preview window cannot open.")
-    print("Run from a desktop terminal, or use G2S_HEADLESS=1 for no-window collection.")
-    sys.exit(1)
-if not has_display and allow_headless:
+if not has_display:
+    print("No DISPLAY detected. Running in headless mode (no preview window).")
+elif os.environ.get("G2S_HEADLESS", "0") == "1":
+    has_display = False
     print("Running in headless mode (no preview window).")
 
 cap = cv2.VideoCapture(0)
