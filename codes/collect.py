@@ -1,4 +1,5 @@
 import os
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import cv2
 import mediapipe as mp
@@ -11,6 +12,8 @@ SAVE_PATH = os.path.join(BASE_DIR, "dataset.pkl")
 SAMPLES = 60
 
 mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
 hands = mp_hands.Hands(
     max_num_hands=1,
     model_complexity=0,   # faster
@@ -83,6 +86,17 @@ for sentence in sentences:
                 ready_to_capture = True
 
         if has_display:
+            # Draw hand landmarks on the display frame
+            if res.multi_hand_landmarks:
+                for hl in res.multi_hand_landmarks:
+                    mp_drawing.draw_landmarks(
+                        display_frame,
+                        hl,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_drawing_styles.get_default_hand_landmarks_style(),
+                        mp_drawing_styles.get_default_hand_connections_style()
+                    )
+
             # UI overlay
             status_text = f"{label}: {count}/{SAMPLES}"
             if ready_to_capture and count < SAMPLES:
