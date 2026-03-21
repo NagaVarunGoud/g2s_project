@@ -1,5 +1,4 @@
 import os
-os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 import cv2
 import mediapipe as mp
@@ -35,15 +34,20 @@ dataset, labels = [], []
 
 sentences = input("Enter sentences (comma separated): ").split(",")
 
+has_display = bool(os.environ.get("DISPLAY"))
+if not has_display:
+    print("No DISPLAY detected. Running in headless mode (no preview window).")
+
 cap = cv2.VideoCapture(0)
 
 # Low processing resolution (fast)
 cap.set(3, 160)
 cap.set(4, 120)
 
-# Bigger display window
-cv2.namedWindow("Collect", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Collect", 800, 600)
+# Bigger display window (GUI only)
+if has_display:
+    cv2.namedWindow("Collect", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Collect", 800, 600)
 
 for sentence in sentences:
     label = sentence.strip().upper().replace(" ", "_")
@@ -78,26 +82,28 @@ for sentence in sentences:
                 count += 1
                 ready_to_capture = True
 
-        # UI overlay
-        status_text = f"{label}: {count}/{SAMPLES}"
-        if ready_to_capture and count < SAMPLES:
-            status_text += " - Press ENTER for next sample"
-        
-        cv2.putText(display_frame, status_text,
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (0, 255, 0), 2)
+        if has_display:
+            # UI overlay
+            status_text = f"{label}: {count}/{SAMPLES}"
+            if ready_to_capture and count < SAMPLES:
+                status_text += " - Capturing"
 
-        cv2.imshow("Collect", display_frame)
+            cv2.putText(display_frame, status_text,
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (0, 255, 0), 2)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:  # ESC to quit
-            break
-        elif key == 13:  # ENTER to next sample (gap between sessions)
-            if ready_to_capture:
-                continue  # Go to next iteration for next sample
+            cv2.imshow("Collect", display_frame)
 
-cv2.destroyAllWindows()
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # ESC to quit
+                break
+        elif count % 10 == 0 and count != 0:
+            # Keep headless progress visible in terminal.
+            print(f"{label}: {count}/{SAMPLES}")
+
+if has_display:
+    cv2.destroyAllWindows()
 cap.release()
 
 joblib.dump((dataset, labels), SAVE_PATH)
