@@ -32,12 +32,15 @@ import threading
 import asyncio
 import edge_tts
 from playsound import playsound
+from deep_translator import GoogleTranslator
 import signal
 import sys
 import shutil
 import subprocess
 import glob
+import hashlib
 from collections import deque
+from ui_app import OpenCVCameraUI
 
 if hasattr(cv2, "setLogLevel"):
     try:
@@ -170,7 +173,13 @@ cap.set(cv2.CAP_PROP_FPS, 30)
 
 if has_display:
     cv2.namedWindow("G2S SYSTEM", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("G2S SYSTEM", 800, 600)
+    cv2.resizeWindow("G2S SYSTEM", 1060, 600)
+
+CAMERA_VIEW_W = 800
+CAMERA_VIEW_H = 600
+UI_PANEL_W = 260
+WINDOW_W = CAMERA_VIEW_W + UI_PANEL_W
+camera_ui = OpenCVCameraUI(CAMERA_VIEW_W, CAMERA_VIEW_H, UI_PANEL_W)
 
 prev_time = time.perf_counter()
 fps_history = deque(maxlen=10)
@@ -184,8 +193,123 @@ def normalize(landmarks):
 
 VOICE_FILE = "voice.mp3"
 VOICE_NAME = "en-US-JennyNeural"
-tts_lock = threading.Lock()
 VERBOSE_DETECTIONS = True
+
+LANGUAGE_TO_VOICE = {
+    "English": "en-US-JennyNeural",
+    "Telugu": "te-IN-MohanNeural",
+    "Hindi": "hi-IN-SwaraNeural",
+    "French": "fr-FR-DeniseNeural",
+    "Spanish": "es-ES-ElviraNeural",
+}
+LANGUAGE_TO_CODE = {
+    "English": "en",
+    "Telugu": "te",
+    "Hindi": "hi",
+    "French": "fr",
+    "Spanish": "es",
+}
+selected_language = "English"
+ui_status = "Idle"
+stored_buffer_lines = []
+last_output_buffer_lines = []
+TTS_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".tts_cache")
+os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+translation_cache = {}
+exit_requested = False
+
+
+def set_status(value):
+    global ui_status
+    ui_status = value
+
+
+def set_language(language):
+    global selected_language
+    selected_language = language
+    print(f"Selected language: {language}")
+    set_status(f"Language: {language}")
+
+
+def reload_last_buffer():
+    global stored_buffer_lines
+    if not last_output_buffer_lines:
+        print("Reload requested, but no previous output buffer available.")
+        set_status("Idle")
+        return
+    stored_buffer_lines = list(last_output_buffer_lines)
+    print("Reloaded last buffer:", " ".join(stored_buffer_lines))
+    set_status("Idle")
+
+
+def clear_buffer():
+    global stored_buffer_lines, detected_signs, last_buffered_sign
+    stored_buffer_lines = []
+    detected_signs = []
+    last_buffered_sign = None
+    print("Buffer cleared")
+    set_status("Idle")
+
+
+def request_exit():
+    global exit_requested
+    exit_requested = True
+    set_status("Exiting")
+
+
+def run_now_without_confirm():
+    set_status("Processing")
+
+    output_lines = []
+    if stored_buffer_lines:
+        output_lines = stored_buffer_lines[-8:]
+    elif detected_signs:
+        output_lines = detected_signs[-8:]
+
+    if not output_lines:
+        print("Run requested, but no signs in buffer.")
+        set_status("Idle")
+        return
+
+    sentence = " ".join(output_lines)
+    print("Run output sentence:", sentence)
+    last_output_buffer_lines[:] = output_lines
+    speak(sentence)
+    set_status("Idle")
+
+
+def translate_text_for_language(text, language):
+    if not text:
+        return ""
+
+    code = LANGUAGE_TO_CODE.get(language, "en")
+    if code == "en":
+        return text
+
+    cache_key = (text, code)
+    if cache_key in translation_cache:
+        return translation_cache[cache_key]
+
+    try:
+        translated = GoogleTranslator(source="en", target=code).translate(text)
+        translation_cache[cache_key] = translated
+        return translated
+    except Exception as exc:
+        print(f"Translate failed ({language}): {exc}")
+        return text
+
+
+def handle_ui_action(action, value=None):
+    if action == "lang":
+        set_language(value)
+    elif action == "reload":
+        reload_last_buffer()
+    elif action == "run":
+        run_now_without_confirm()
+    elif action == "clear":
+        clear_buffer()
+    elif action == "exit":
+        request_exit()
 
 
 def play_audio_file(path):
@@ -258,7 +382,7 @@ def play_with_edge_playback(text):
                 "--text",
                 text,
                 "--voice",
-                VOICE_NAME,
+                LANGUAGE_TO_VOICE.get(selected_language, VOICE_NAME),
                 "--rate",
                 "+20%",
             ],
@@ -276,34 +400,55 @@ def play_with_edge_playback(text):
         return False
 
 
+def cache_file_path(text, voice):
+    key = hashlib.sha1(f"{voice}|{text}".encode("utf-8")).hexdigest()
+    return os.path.join(TTS_CACHE_DIR, f"{key}.mp3")
+
+
 async def speak_async(text):
     if not text:
         return
 
-    with tts_lock:
-        print(f"TTS: start -> {text}")
-        # Lowest-latency path: stream TTS directly to player.
-        if play_with_edge_playback(text):
+    translated_text = translate_text_for_language(text, selected_language)
+    if translated_text != text:
+        print(f"Translated ({selected_language}): {translated_text}")
+
+    voice = LANGUAGE_TO_VOICE.get(selected_language, VOICE_NAME)
+    cached_path = cache_file_path(translated_text, voice)
+
+    print(f"TTS: start -> {translated_text}")
+
+    # Fast path: if phrase was spoken before, play cached audio instantly.
+    if os.path.exists(cached_path):
+        print("TTS: cache hit")
+        if play_audio_file(cached_path):
             print("TTS: done")
             return
 
-        communicate = edge_tts.Communicate(text=text, voice=VOICE_NAME)
-        try:
-            print("TTS: generating voice.mp3 with edge-tts...")
-            await communicate.save(VOICE_FILE)
-            if not play_audio_file(VOICE_FILE):
-                print("Audio playback failed: no usable player found.")
-            else:
-                print("TTS: playback done")
-        except Exception as exc:
-            print(f"TTS failed: {exc}")
-        finally:
-            if os.path.exists(VOICE_FILE):
-                try:
-                    os.remove(VOICE_FILE)
-                except Exception:
-                    pass
-            print("TTS: done")
+    # Lowest-latency first attempt: stream directly to player.
+    if play_with_edge_playback(translated_text):
+        print("TTS: done")
+        return
+
+    communicate = edge_tts.Communicate(text=translated_text, voice=voice)
+    temp_path = f"{cached_path}.tmp"
+    try:
+        print("TTS: generating mp3 with edge-tts...")
+        await communicate.save(temp_path)
+        os.replace(temp_path, cached_path)
+        if not play_audio_file(cached_path):
+            print("Audio playback failed: no usable player found.")
+        else:
+            print("TTS: playback done")
+    except Exception as exc:
+        print(f"TTS failed: {exc}")
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+        print("TTS: done")
 
 
 def speak(text):
@@ -333,6 +478,14 @@ def cleanup(sig=None, frame=None):
 signal.signal(signal.SIGINT, cleanup)   # Ctrl+C safe
 signal.signal(signal.SIGTERM, cleanup)
 
+if has_display:
+    cv2.setMouseCallback(
+        "G2S SYSTEM",
+        lambda event, x, y, flags, param: camera_ui.handle_mouse(
+            event, x, y, lambda action, value=None: handle_ui_action(action, value)
+        ),
+    )
+
 last_result = None
 last_hand_landmarks = None
 last_detection = False
@@ -350,6 +503,9 @@ last_confirm_empty_ts = 0.0
 last_logged_gesture = None
 
 while True:
+    if exit_requested:
+        cleanup()
+
     ret, frame = cap.read()
     if not ret:
         continue
@@ -358,7 +514,9 @@ while True:
     frame_count += 1
 
     if has_display:
-        display_frame = cv2.resize(frame, (640, 480))
+        camera_frame = cv2.resize(frame, (CAMERA_VIEW_W, CAMERA_VIEW_H))
+        display_frame = np.zeros((CAMERA_VIEW_H, WINDOW_W, 3), dtype=np.uint8)
+        display_frame[:, :CAMERA_VIEW_W] = camera_frame
 
     if frame_count % PROCESS_EVERY_N_FRAMES == 0:
 
@@ -381,11 +539,21 @@ while True:
                         print("Detected:", gesture)
                         last_logged_gesture = gesture
                     if gesture == "CONFIRM":
+                        output_lines = []
                         if detected_signs:
-                            sentence = " ".join(detected_signs)
+                            output_lines = detected_signs[-8:]
+                        elif stored_buffer_lines:
+                            output_lines = stored_buffer_lines[-8:]
+
+                        if output_lines:
+                            sentence = " ".join(output_lines)
                             print("Output sentence:", sentence)
+                            last_output_buffer_lines[:] = output_lines
                             speak(sentence)
+
+                            # Clear current working buffer after CONFIRM output.
                             detected_signs.clear()
+                            stored_buffer_lines.clear()
                             last_buffered_sign = None
                         else:
                             now_ts = time.time()
@@ -396,6 +564,7 @@ while True:
                         if gesture != last_buffered_sign:
                             detected_signs.append(gesture)
                             last_buffered_sign = gesture
+                            stored_buffer_lines[:] = detected_signs[-8:]
                 break
         else:
             missed_detections += 1
@@ -403,10 +572,15 @@ while True:
                 last_detection = False
                 last_hand_landmarks = None
 
+        # Auto-sync buffer box with current collected signs when signs exist.
+        # Keep last output visible after CONFIRM clears runtime detections.
+        if detected_signs:
+            stored_buffer_lines[:] = detected_signs[-8:]
+
     if has_display:
         if last_hand_landmarks is not None:
             mp_drawing.draw_landmarks(
-                display_frame,
+                camera_frame,
                 last_hand_landmarks,
                 mp_hands.HAND_CONNECTIONS,
                 mp_drawing_styles.get_default_hand_landmarks_style(),
@@ -414,7 +588,7 @@ while True:
             )
 
         if last_result:
-            cv2.putText(display_frame, f"Gesture: {last_result}",
+            cv2.putText(camera_frame, f"Gesture: {last_result}",
                         (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.0, (0, 255, 0), 2)
@@ -425,24 +599,28 @@ while True:
         fps_history.append(1.0 / dt)
         fps = sum(fps_history) / len(fps_history)
 
-        cv2.putText(display_frame, f"FPS: {fps:.1f}",
+        cv2.putText(camera_frame, f"FPS: {fps:.1f}",
                     (20, 85),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1, (255, 0, 0), 2)
 
         status = "Hand: Detected" if last_detection else "Hand: Searching..."
         status_color = (0, 255, 0) if last_detection else (0, 165, 255)
-        cv2.putText(display_frame, status,
+        cv2.putText(camera_frame, status,
                     (20, 120),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8, status_color, 2)
 
         if detected_signs:
             text = "Signs: " + " ".join(detected_signs[-6:])
-            cv2.putText(display_frame, text,
+            cv2.putText(camera_frame, text,
                         (20, 155),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6, (255, 255, 255), 2)
+
+        # Copy updated camera area and draw separate UI panel.
+        display_frame[:, :CAMERA_VIEW_W] = camera_frame
+        camera_ui.draw(display_frame, stored_buffer_lines, selected_language, ui_status)
 
         cv2.imshow("G2S SYSTEM", display_frame)
 

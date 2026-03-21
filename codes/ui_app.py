@@ -5,6 +5,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk
+import cv2
 
 
 BASE_DIR = os.path.dirname(__file__)
@@ -189,3 +190,115 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = GestureUI(root)
     root.mainloop()
+
+
+class OpenCVCameraUI:
+    """UI-only layer for drawing and click hit-testing in OpenCV frames."""
+
+    def __init__(self, camera_view_w=800, camera_view_h=600, ui_panel_w=260):
+        self.camera_view_w = camera_view_w
+        self.camera_view_h = camera_view_h
+        self.ui_panel_w = ui_panel_w
+        self.ui_buttons = []
+
+    def _draw_button(self, frame, rect, label, active=False):
+        x1, y1, x2, y2 = rect
+        color = (70, 170, 70) if active else (50, 50, 50)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (230, 230, 230), 1)
+        cv2.putText(
+            frame,
+            label,
+            (x1 + 8, y1 + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+        )
+
+    def _rebuild_buttons(self):
+        panel_x = self.camera_view_w
+        self.ui_buttons = []
+
+        langs = ["English", "Telugu", "Hindi", "French", "Spanish"]
+        for i, lang in enumerate(langs):
+            col = i % 2
+            row = i // 2
+            x1 = panel_x + 10 + col * 105
+            y1 = 220 + row * 35
+            x2 = x1 + 95
+            y2 = y1 + 28
+            self.ui_buttons.append(
+                {"label": lang, "action": "lang", "value": lang, "rect": (x1, y1, x2, y2)}
+            )
+
+        self.ui_buttons.append(
+            {
+                "label": "Reload",
+                "action": "reload",
+                "value": None,
+                "rect": (panel_x + 10, 335, panel_x + 100, 365),
+            }
+        )
+        self.ui_buttons.append(
+            {
+                "label": "Run",
+                "action": "run",
+                "value": None,
+                "rect": (panel_x + 115, 335, panel_x + 205, 365),
+            }
+        )
+        self.ui_buttons.append(
+            {
+                "label": "Clear",
+                "action": "clear",
+                "value": None,
+                "rect": (panel_x + 10, 372, panel_x + 100, 402),
+            }
+        )
+        self.ui_buttons.append(
+            {
+                "label": "Exit",
+                "action": "exit",
+                "value": None,
+                "rect": (panel_x + 115, 372, panel_x + 205, 402),
+            }
+        )
+
+    def draw(self, frame, stored_buffer_lines, selected_language, ui_status):
+        if not self.ui_buttons:
+            self._rebuild_buttons()
+
+        h, w = frame.shape[:2]
+        panel_x = self.camera_view_w
+
+        cv2.rectangle(frame, (panel_x, 0), (w - 1, h - 1), (30, 30, 30), -1)
+        cv2.line(frame, (panel_x, 0), (panel_x, h - 1), (90, 90, 90), 1)
+
+        cv2.putText(frame, "Stored Buffer", (panel_x + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.rectangle(frame, (panel_x + 10, 30), (w - 10, 190), (60, 60, 60), 1)
+
+        lines = stored_buffer_lines[-8:] if stored_buffer_lines else ["(empty)"]
+        y = 50
+        for ln in lines:
+            cv2.putText(frame, ln[:22], (panel_x + 14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
+            y += 18
+
+        cv2.putText(frame, "Languages", (panel_x + 10, 212), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
+        for btn in self.ui_buttons:
+            active = btn["action"] == "lang" and btn["value"] == selected_language
+            self._draw_button(frame, btn["rect"], btn["label"], active=active)
+
+        cv2.putText(frame, f"Status: {ui_status}", (panel_x + 10, 430), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
+        cv2.putText(frame, f"Lang: {selected_language}", (panel_x + 10, 452), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 255), 1)
+
+    def handle_mouse(self, event, x, y, on_action):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+
+        for btn in self.ui_buttons:
+            x1, y1, x2, y2 = btn["rect"]
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                on_action(btn["action"], btn.get("value"))
+                break
