@@ -1,10 +1,10 @@
 import os
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import cv2
 import mediapipe as mp
 import numpy as np
 import joblib
+import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 SAVE_PATH = os.path.join(BASE_DIR, "dataset.pkl")
@@ -37,9 +37,14 @@ dataset, labels = [], []
 
 sentences = input("Enter sentences (comma separated): ").split(",")
 
+allow_headless = os.environ.get("G2S_HEADLESS", "0") == "1"
 has_display = bool(os.environ.get("DISPLAY"))
-if not has_display:
-    print("No DISPLAY detected. Running in headless mode (no preview window).")
+if not has_display and not allow_headless:
+    print("No DISPLAY detected, so preview window cannot open.")
+    print("Run from a desktop terminal, or use G2S_HEADLESS=1 for no-window collection.")
+    sys.exit(1)
+if not has_display and allow_headless:
+    print("Running in headless mode (no preview window).")
 
 cap = cv2.VideoCapture(0)
 
@@ -52,13 +57,15 @@ if has_display:
     cv2.namedWindow("Collect", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Collect", 800, 600)
 
+stop_requested = False
+
 for sentence in sentences:
     label = sentence.strip().upper().replace(" ", "_")
     print(f"Collecting for: {label}")
 
     count = 0
 
-    while count < SAMPLES:
+    while count < SAMPLES and not stop_requested:
         ret, frame = cap.read()
         if not ret:
             continue
@@ -71,19 +78,11 @@ for sentence in sentences:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = hands.process(rgb)
 
-        ready_to_capture = False
+        norm = None
         if res.multi_hand_landmarks:
             for hl in res.multi_hand_landmarks:
                 norm = normalize_landmarks(hl.landmark)
-
-                dataset.append(norm)
-                labels.append(label)
-
-                dataset.append(augment(norm))
-                labels.append(label)
-
-                count += 1
-                ready_to_capture = True
+                break
 
         if has_display:
             # Draw hand landmarks on the display frame
@@ -99,8 +98,11 @@ for sentence in sentences:
 
             # UI overlay
             status_text = f"{label}: {count}/{SAMPLES}"
-            if ready_to_capture and count < SAMPLES:
-                status_text += " - Capturing"
+            if count < SAMPLES:
+                if norm is not None:
+                    status_text += " - Press ENTER to capture"
+                else:
+                    status_text += " - Show hand"
 
             cv2.putText(display_frame, status_text,
                         (10, 30),
@@ -111,10 +113,25 @@ for sentence in sentences:
 
             key = cv2.waitKey(1) & 0xFF
             if key == 27:  # ESC to quit
+                stop_requested = True
                 break
-        elif count % 10 == 0 and count != 0:
+            if key == 13 and norm is not None:  # ENTER to capture this sample
+                dataset.append(norm)
+                labels.append(label)
+                dataset.append(augment(norm))
+                labels.append(label)
+                count += 1
+                print(f"{label}: {count}/{SAMPLES}")
+        else:
+            if norm is not None:
+                dataset.append(norm)
+                labels.append(label)
+                dataset.append(augment(norm))
+                labels.append(label)
+                count += 1
             # Keep headless progress visible in terminal.
-            print(f"{label}: {count}/{SAMPLES}")
+            if count % 10 == 0 and count != 0:
+                print(f"{label}: {count}/{SAMPLES}")
 
 if has_display:
     cv2.destroyAllWindows()
