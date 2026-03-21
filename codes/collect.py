@@ -1,5 +1,13 @@
 import os
 
+# Detect display availability BEFORE importing cv2/Qt-linked libraries.
+# Without this, Qt will try to connect to X11 and crash when running via SSH
+# without X11 forwarding (e.g. plain `ssh user@raspberrypi`).
+headless_forced = os.environ.get("G2S_HEADLESS", "0") == "1"
+has_display_env = bool(os.environ.get("DISPLAY"))
+if not has_display_env or headless_forced:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -34,14 +42,25 @@ def augment(data):
 
 dataset, labels = [], []
 
+print("=" * 60)
+print("G2S Data Collection")
+print("=" * 60)
+print("CAMERA SETUP: Connect the camera to the Raspberry Pi")
+print("  (not to the local computer running VS Code SSH).")
+print("  The script runs ON the Pi, so the Pi must see the camera.")
+print()
+if not has_display_env or headless_forced:
+    print("TIP: To see a live camera preview with hand landmarks,")
+    print("  connect a monitor to the Pi, OR enable X11 forwarding:")
+    print("    ssh -X <user>@<raspberrypi-ip>")
+    print("  then re-run this script.")
+    print()
+
 sentences = input("Enter sentences (comma separated): ").split(",")
 
-has_display = bool(os.environ.get("DISPLAY"))
+has_display = has_display_env and not headless_forced
 if not has_display:
     print("No DISPLAY detected. Running in headless mode (no preview window).")
-elif os.environ.get("G2S_HEADLESS", "0") == "1":
-    has_display = False
-    print("Running in headless mode (no preview window).")
 
 cap = cv2.VideoCapture(0)
 
@@ -69,9 +88,6 @@ for sentence in sentences:
 
         frame = cv2.flip(frame, 1)
 
-        # Resize for smoother display (upscale only for UI)
-        display_frame = cv2.resize(frame, (640, 480))
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = hands.process(rgb)
 
@@ -82,6 +98,8 @@ for sentence in sentences:
                 break
 
         if has_display:
+            # Resize for smoother display (upscale only for UI)
+            display_frame = cv2.resize(frame, (640, 480))
             # Draw hand landmarks on the display frame
             if res.multi_hand_landmarks:
                 for hl in res.multi_hand_landmarks:
@@ -126,9 +144,9 @@ for sentence in sentences:
                 dataset.append(augment(norm))
                 labels.append(label)
                 count += 1
-            # Keep headless progress visible in terminal.
-            if count % 10 == 0 and count != 0:
-                print(f"{label}: {count}/{SAMPLES}")
+                # Keep headless progress visible in terminal.
+                if count % 10 == 0 or count == SAMPLES:
+                    print(f"{label}: {count}/{SAMPLES}")
 
 if has_display:
     cv2.destroyAllWindows()
