@@ -3,19 +3,26 @@ import joblib
 import numpy as np
 import time
 from collections import deque
+from collections import Counter
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "models", "model.pkl")
 
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"Model not found at {MODEL_PATH}. Run train.py first.")
+
 MODEL = joblib.load(MODEL_PATH)
 
-VOTE_LEN = 6
-CONF_THRESHOLD = 0.7
-COOLDOWN = 1.5
+VOTE_LEN = 2
+CONF_THRESHOLD = 0.5
+MIN_GAP_ANY = 0.0
+COOLDOWN_SAME_LABEL = 0.1
 
 pred_queue = deque(maxlen=VOTE_LEN)
 sentence_buffer = []
 last_time = 0
+last_label = None
+last_raw_label = None
 
 
 def extract_features(landmarks):
@@ -40,7 +47,7 @@ def extract_features(landmarks):
 
 
 def process(landmarks):
-    global last_time, sentence_buffer
+    global last_time, sentence_buffer, last_label, last_raw_label
 
     feat = extract_features(landmarks).reshape(1, -1)
     probs = MODEL.predict_proba(feat)[0]
@@ -50,17 +57,31 @@ def process(landmarks):
     conf = probs[idx]
 
     if conf < CONF_THRESHOLD:
+        pred_queue.clear()
         return None, sentence_buffer
+
+    # When classifier output changes, drop old vote history for faster switching.
+    if last_raw_label is not None and label != last_raw_label:
+        pred_queue.clear()
+    last_raw_label = label
 
     pred_queue.append(label)
 
     if len(pred_queue) == VOTE_LEN:
-        majority = max(set(pred_queue), key=pred_queue.count)
+        majority = Counter(pred_queue).most_common(1)[0][0]
         pred_queue.clear()
 
-        if time.time() - last_time > COOLDOWN:
-            last_time = time.time()
-            sentence_buffer.append(majority)
-            return majority, sentence_buffer
+        now = time.time()
+
+        # Small global gap avoids bursts; longer cooldown only for identical repeats.
+        if now - last_time < MIN_GAP_ANY:
+            return None, sentence_buffer
+        if majority == last_label and now - last_time < COOLDOWN_SAME_LABEL:
+            return None, sentence_buffer
+
+        last_time = now
+        last_label = majority
+        sentence_buffer.append(majority)
+        return majority, sentence_buffer
 
     return None, sentence_buffer
