@@ -76,7 +76,7 @@ CAMERA_CAPTURE_W = 640
 CAMERA_CAPTURE_H = 480
 CAMERA_VIEW_W = 960
 CAMERA_VIEW_H = 720
-UI_PANEL_W = 224
+UI_PANEL_W = 248
 WINDOW_W = CAMERA_VIEW_W + UI_PANEL_W
 FALLBACK_SCREEN_W = 480
 FALLBACK_SCREEN_H = 320
@@ -210,8 +210,8 @@ if has_display:
     screen_size = detect_display_size() or (FALLBACK_SCREEN_W, FALLBACK_SCREEN_H)
     screen_w, screen_h = screen_size
     # Keep panel readable while guaranteeing the composed frame fits display.
-    UI_PANEL_W = max(110, int(screen_w * 0.187) + 6)
-    UI_PANEL_W = min(UI_PANEL_W, max(110, screen_w - 180))
+    UI_PANEL_W = max(150, int(screen_w * 0.30))
+    UI_PANEL_W = min(UI_PANEL_W, max(150, screen_w - 170))
     CAMERA_VIEW_W = max(160, screen_w - UI_PANEL_W)
     CAMERA_VIEW_H = max(240, screen_h)
     WINDOW_W = CAMERA_VIEW_W + UI_PANEL_W

@@ -207,20 +207,43 @@ class OpenCVCameraUI:
         self.buffer_top = 40
         self.buffer_bottom = 170
         self.lang_title_y = 190
+        self.colors = {
+            "panel_bg": (18, 24, 28),
+            "card_bg": (26, 33, 38),
+            "card_border": (68, 84, 92),
+            "header": (232, 238, 242),
+            "text": (215, 224, 230),
+            "muted": (150, 170, 182),
+            "btn": (44, 56, 66),
+            "btn_active": (46, 140, 84),
+            "btn_border": (108, 124, 132),
+        }
 
     def _draw_button(self, frame, rect, label, active=False):
         x1, y1, x2, y2 = rect
-        color = (70, 170, 70) if active else (50, 50, 50)
+        color = self.colors["btn_active"] if active else self.colors["btn"]
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (230, 230, 230), 1)
-        baseline = y1 + int((y2 - y1) * 0.68)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), self.colors["btn_border"], 1)
+
+        btn_w = x2 - x1
+        btn_h = y2 - y1
+        font_scale = self.button_font
+        while font_scale > 0.30:
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+            if tw <= btn_w - 8 and th <= btn_h - 6:
+                break
+            font_scale -= 0.03
+
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        tx = x1 + max(4, (btn_w - tw) // 2)
+        baseline = y1 + (btn_h + th) // 2 - 1
         cv2.putText(
             frame,
             label,
-            (x1 + 6, baseline),
+            (tx, baseline),
             cv2.FONT_HERSHEY_SIMPLEX,
-            self.button_font,
-            (255, 255, 255),
+            font_scale,
+            (245, 248, 250),
             1,
             cv2.LINE_AA,
         )
@@ -231,20 +254,20 @@ class OpenCVCameraUI:
 
         # Scale panel elements for small displays (e.g., 480x320) and larger screens.
         h = self.camera_view_h
-        self.title_font = 0.46 if h <= 360 else 0.62
-        self.text_font = 0.36 if h <= 360 else 0.5
-        self.button_font = 0.38 if h <= 360 else 0.52
-        self.status_font = 0.36 if h <= 360 else 0.48
+        self.title_font = 0.49 if h <= 360 else 0.64
+        self.text_font = 0.40 if h <= 360 else 0.52
+        self.button_font = 0.40 if h <= 360 else 0.54
+        self.status_font = 0.39 if h <= 360 else 0.50
 
         self.buffer_top = 30 if h <= 360 else 32
-        self.buffer_bottom = min(max(95, int(h * 0.33)) if h <= 360 else max(120, int(h * 0.48)), h - 150)
+        self.buffer_bottom = min(max(95, int(h * 0.34)) if h <= 360 else max(120, int(h * 0.48)), h - 150)
         self.lang_title_y = self.buffer_bottom + 22
 
         inner_left = panel_x + 10
         inner_right = panel_x + self.ui_panel_w - 10
         gap = 8 if h <= 360 else 10
         btn_w = max(44, (inner_right - inner_left - gap) // 2)
-        btn_h = 20 if h <= 360 else 34
+        btn_h = 21 if h <= 360 else 34
         first_row_y = self.lang_title_y + 10
 
         langs = ["English", "Telugu", "Hindi", "French", "Spanish"]
@@ -323,29 +346,30 @@ class OpenCVCameraUI:
         h, w = frame.shape[:2]
         panel_x = self.camera_view_w
 
-        cv2.rectangle(frame, (panel_x, 0), (w - 1, h - 1), (30, 30, 30), -1)
-        cv2.line(frame, (panel_x, 0), (panel_x, h - 1), (90, 90, 90), 1)
+        cv2.rectangle(frame, (panel_x, 0), (w - 1, h - 1), self.colors["panel_bg"], -1)
+        cv2.line(frame, (panel_x, 0), (panel_x, h - 1), self.colors["card_border"], 1)
 
-        cv2.putText(frame, "Stored Buffer", (panel_x + 10, 22), cv2.FONT_HERSHEY_SIMPLEX, self.title_font, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.rectangle(frame, (panel_x + 10, self.buffer_top), (w - 10, self.buffer_bottom), (60, 60, 60), 1)
+        cv2.putText(frame, "Stored Buffer", (panel_x + 10, 22), cv2.FONT_HERSHEY_SIMPLEX, self.title_font, self.colors["header"], 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (panel_x + 10, self.buffer_top), (w - 10, self.buffer_bottom), self.colors["card_bg"], -1)
+        cv2.rectangle(frame, (panel_x + 10, self.buffer_top), (w - 10, self.buffer_bottom), self.colors["card_border"], 1)
 
         lines = stored_buffer_lines[-8:] if stored_buffer_lines else ["(empty)"]
         max_chars = max(10, (self.ui_panel_w - 40) // 10)
         y = self.buffer_top + 18
         for ln in lines:
-            cv2.putText(frame, ln[:max_chars], (panel_x + 12, y), cv2.FONT_HERSHEY_SIMPLEX, self.text_font, (230, 230, 230), 1, cv2.LINE_AA)
+            cv2.putText(frame, ln[:max_chars], (panel_x + 12, y), cv2.FONT_HERSHEY_SIMPLEX, self.text_font, self.colors["text"], 1, cv2.LINE_AA)
             y += 16
             if y > self.buffer_bottom - 4:
                 break
 
-        cv2.putText(frame, "Languages", (panel_x + 10, self.lang_title_y), cv2.FONT_HERSHEY_SIMPLEX, self.title_font, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, "Languages", (panel_x + 10, self.lang_title_y), cv2.FONT_HERSHEY_SIMPLEX, self.title_font, self.colors["header"], 1, cv2.LINE_AA)
 
         for btn in self.ui_buttons:
             active = btn["action"] == "lang" and btn["value"] == selected_language
             self._draw_button(frame, btn["rect"], btn["label"], active=active)
 
-        cv2.putText(frame, f"Status: {ui_status}", (panel_x + 10, h - 24), cv2.FONT_HERSHEY_SIMPLEX, self.status_font, (200, 255, 200), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Lang: {selected_language}", (panel_x + 10, h - 8), cv2.FONT_HERSHEY_SIMPLEX, self.status_font, (200, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Status: {ui_status}", (panel_x + 10, h - 24), cv2.FONT_HERSHEY_SIMPLEX, self.status_font, (174, 235, 190), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Lang: {selected_language}", (panel_x + 10, h - 8), cv2.FONT_HERSHEY_SIMPLEX, self.status_font, self.colors["muted"], 1, cv2.LINE_AA)
 
     def handle_mouse(self, event, x, y, on_action):
         if event != cv2.EVENT_LBUTTONDOWN:
