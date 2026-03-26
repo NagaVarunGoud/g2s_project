@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import glob
 import hashlib
+import re
 from collections import deque
 from ui_app import OpenCVCameraUI
 
@@ -70,6 +71,35 @@ if not has_display:
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
+
+CAMERA_CAPTURE_W = 640
+CAMERA_CAPTURE_H = 480
+CAMERA_VIEW_W = 960
+CAMERA_VIEW_H = 720
+UI_PANEL_W = 224
+WINDOW_W = CAMERA_VIEW_W + UI_PANEL_W
+FALLBACK_SCREEN_W = 480
+FALLBACK_SCREEN_H = 320
+
+
+def detect_display_size():
+    if not os.environ.get("DISPLAY"):
+        return None
+
+    try:
+        proc = subprocess.run(
+            ["xrandr", "--current"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        match = re.search(r"current\s+(\d+)\s+x\s+(\d+)", proc.stdout)
+        if not match:
+            return None
+        return int(match.group(1)), int(match.group(2))
+    except Exception:
+        return None
 
 CAMERA_DEVICE_PATH = "/dev/video0"
 
@@ -166,19 +196,32 @@ if cap is None:
 
 # Faster camera
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-cap.set(3, 160)
-cap.set(4, 120)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_CAPTURE_W)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_CAPTURE_H)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 cap.set(cv2.CAP_PROP_FPS, 30)
 
+actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+if actual_w and actual_h:
+    print(f"Camera stream resolution: {actual_w}x{actual_h}")
+
+if has_display:
+    screen_size = detect_display_size() or (FALLBACK_SCREEN_W, FALLBACK_SCREEN_H)
+    screen_w, screen_h = screen_size
+    # Keep panel readable while guaranteeing the composed frame fits display.
+    UI_PANEL_W = max(110, int(screen_w * 0.187) + 6)
+    UI_PANEL_W = min(UI_PANEL_W, max(110, screen_w - 180))
+    CAMERA_VIEW_W = max(160, screen_w - UI_PANEL_W)
+    CAMERA_VIEW_H = max(240, screen_h)
+    WINDOW_W = CAMERA_VIEW_W + UI_PANEL_W
+    print(f"Display size: {screen_w}x{screen_h} -> camera {CAMERA_VIEW_W}x{CAMERA_VIEW_H}, panel {UI_PANEL_W}")
+
 if has_display:
     cv2.namedWindow("G2S SYSTEM", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("G2S SYSTEM", 1060, 600)
-
-CAMERA_VIEW_W = 800
-CAMERA_VIEW_H = 600
-UI_PANEL_W = 260
-WINDOW_W = CAMERA_VIEW_W + UI_PANEL_W
+    cv2.resizeWindow("G2S SYSTEM", WINDOW_W, CAMERA_VIEW_H)
+    cv2.setWindowProperty("G2S SYSTEM", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.moveWindow("G2S SYSTEM", 0, 0)
 camera_ui = OpenCVCameraUI(CAMERA_VIEW_W, CAMERA_VIEW_H, UI_PANEL_W)
 
 prev_time = time.perf_counter()
@@ -489,6 +532,7 @@ if has_display:
 last_result = None
 last_hand_landmarks = None
 last_detection = False
+fullscreen_applied = False
 
 # Process more often for smoother detection.
 PROCESS_EVERY_N_FRAMES = 2
@@ -623,6 +667,17 @@ while True:
         camera_ui.draw(display_frame, stored_buffer_lines, selected_language, ui_status)
 
         cv2.imshow("G2S SYSTEM", display_frame)
+
+        # Apply fullscreen after first frame is shown; then re-assert periodically.
+        if not fullscreen_applied:
+            cv2.resizeWindow("G2S SYSTEM", WINDOW_W, CAMERA_VIEW_H)
+            cv2.setWindowProperty("G2S SYSTEM", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.moveWindow("G2S SYSTEM", 0, 0)
+            cv2.waitKey(1)
+            fullscreen_applied = True
+        elif frame_count % 60 == 0:
+            cv2.setWindowProperty("G2S SYSTEM", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.moveWindow("G2S SYSTEM", 0, 0)
 
         # ESC = clean exit
         if cv2.waitKey(1) == 27:
