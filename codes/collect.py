@@ -4,6 +4,7 @@ import time
 import shutil
 import signal
 import subprocess
+import re
 
 # Detect display availability BEFORE importing cv2/Qt-linked libraries.
 # Without this, Qt will try to connect to X11 and crash when running via SSH
@@ -32,6 +33,8 @@ REQUIRED_DETECTIONS = 3
 AUTO_CAPTURE_EVERY_N_FRAMES = 4
 CAMERA_DEVICE_INDEX = 0
 CAMERA_DEVICE_PATH = "/dev/video0"
+FALLBACK_SCREEN_W = 480
+FALLBACK_SCREEN_H = 320
 
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
@@ -48,6 +51,26 @@ if hasattr(cv2, "setLogLevel"):
         cv2.setLogLevel(2)  # errors only
     except Exception:
         pass
+
+
+def detect_display_size():
+    if not os.environ.get("DISPLAY"):
+        return None
+
+    try:
+        proc = subprocess.run(
+            ["xrandr", "--current"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        match = re.search(r"current\s+(\d+)\s+x\s+(\d+)", proc.stdout)
+        if not match:
+            return None
+        return int(match.group(1)), int(match.group(2))
+    except Exception:
+        return None
 
 
 def kill_camera_users(device_path, include_self=False):
@@ -152,10 +175,20 @@ cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(3, 320)
 cap.set(4, 240)
 
-# Bigger display window (GUI only)
+view_w, view_h = 800, 600
 if has_display:
+    screen_size = detect_display_size() or (FALLBACK_SCREEN_W, FALLBACK_SCREEN_H)
+    screen_w, screen_h = screen_size
+    view_w = max(320, screen_w)
+    view_h = max(240, screen_h)
+    print(f"Collect display size: {screen_w}x{screen_h} -> window {view_w}x{view_h}")
+
     cv2.namedWindow("Collect", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Collect", 800, 600)
+    cv2.resizeWindow("Collect", view_w, view_h)
+    cv2.setWindowProperty("Collect", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.moveWindow("Collect", 0, 0)
+
+fullscreen_applied = False
 
 stop_requested = False
 clean_sentences = [s.strip() for s in sentences if s.strip()]
@@ -200,8 +233,14 @@ for idx, sentence in enumerate(clean_sentences):
         else:
             detected_streak = 0
 
-        # Resize for smoother display (upscale only for UI)
-        display_frame = cv2.resize(frame, (640, 480))
+        # Render preview at actual display size for consistent UI.
+        display_frame = cv2.resize(frame, (view_w, view_h))
+
+        text_scale_main = 0.55 if view_h <= 360 else 0.7
+        text_scale_fps = 0.50 if view_h <= 360 else 0.65
+        text_thickness = 1 if view_h <= 360 else 2
+        text_y1 = 24 if view_h <= 360 else 30
+        text_y2 = 48 if view_h <= 360 else 60
         # Draw hand landmarks on the display frame
         if res.multi_hand_landmarks:
             for hl in res.multi_hand_landmarks:
@@ -224,16 +263,26 @@ for idx, sentence in enumerate(clean_sentences):
                 status_text += " - Hold hand steady"
 
         cv2.putText(display_frame, status_text,
-                    (10, 30),
+                    (10, text_y1),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (0, 255, 0), 2)
+                    text_scale_main, (0, 255, 0), text_thickness)
         cv2.putText(display_frame,
                 f"FPS: {fps:.1f}",
-                (10, 60),
+                (10, text_y2),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.65, (255, 255, 0), 2)
+                text_scale_fps, (255, 255, 0), text_thickness)
 
         cv2.imshow("Collect", display_frame)
+
+        if has_display and not fullscreen_applied:
+            cv2.resizeWindow("Collect", view_w, view_h)
+            cv2.setWindowProperty("Collect", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.moveWindow("Collect", 0, 0)
+            cv2.waitKey(1)
+            fullscreen_applied = True
+        elif has_display and frame_idx % 60 == 0:
+            cv2.setWindowProperty("Collect", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.moveWindow("Collect", 0, 0)
 
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC to quit

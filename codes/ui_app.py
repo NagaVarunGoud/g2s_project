@@ -6,6 +6,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 import cv2
+import numpy as np
 
 
 BASE_DIR = os.path.dirname(__file__)
@@ -91,7 +92,7 @@ class GestureUI:
         lang_frame = ttk.LabelFrame(main, text="Language Selection", padding=10)
         lang_frame.pack(fill="x", pady=(0, 10))
 
-        languages = ["English", "Telugu", "Hindi", "French", "Spanish"]
+        languages = ["English", "Telugu", "Hindi", "French", "Spanish", "German"]
         for idx, lang in enumerate(languages):
             btn = ttk.Button(
                 lang_frame,
@@ -218,6 +219,82 @@ class OpenCVCameraUI:
             "btn_active": (46, 140, 84),
             "btn_border": (108, 124, 132),
         }
+        self.logo_img = self._load_logo_image()
+        self._logo_missing_logged = False
+
+    def _load_logo_image(self):
+        candidates = [
+            os.path.join(BASE_DIR, "assets", "hash_logo.png"),
+            os.path.join(BASE_DIR, "assets", "hash logo.png"),
+            os.path.join(BASE_DIR, "assets", "hash_logo.jpg"),
+            os.path.join(BASE_DIR, "assets", "hash_logo.jpeg"),
+            os.path.join(BASE_DIR, "hash_logo.png"),
+            os.path.join(BASE_DIR, "hash logo.png"),
+            os.path.join(BASE_DIR, "hash_logo.jpg"),
+            os.path.join(BASE_DIR, "logo.png"),
+            os.path.join(BASE_DIR, "logo.jpg"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    print(f"Loaded panel logo: {path}")
+                    return img
+        return None
+
+    def _draw_logo(self, frame, panel_x, panel_w):
+        logo_max = max(40, min(76, int(self.camera_view_h * 0.20)))
+        box_pad = 8
+        card_w = logo_max + box_pad * 2
+        card_h = logo_max + box_pad * 2
+        x1 = 8
+        y1 = 8
+        x2 = x1 + card_w
+        y2 = y1 + card_h
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), self.colors["card_bg"], -1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), self.colors["card_border"], 1)
+
+        if self.logo_img is None:
+            if not self._logo_missing_logged:
+                print(
+                    "Logo not found. Place logo at codes/assets/hash_logo.png "
+                    "(or codes/hash_logo.png)."
+                )
+                self._logo_missing_logged = True
+            cv2.putText(
+                frame,
+                "#Hash",
+                (x1 + 12, y1 + card_h // 2 + 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                self.colors["header"],
+                1,
+                cv2.LINE_AA,
+            )
+            return
+
+        src = self.logo_img
+        h, w = src.shape[:2]
+        if h <= 0 or w <= 0:
+            return
+
+        scale = min(logo_max / w, logo_max / h)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        resized = cv2.resize(src, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        lx = x1 + (card_w - new_w) // 2
+        ly = y1 + (card_h - new_h) // 2
+
+        if resized.shape[2] == 4:
+            alpha = resized[:, :, 3:4].astype(np.float32) / 255.0
+            roi = frame[ly:ly + new_h, lx:lx + new_w].astype(np.float32)
+            rgb = resized[:, :, :3].astype(np.float32)
+            out = alpha * rgb + (1.0 - alpha) * roi
+            frame[ly:ly + new_h, lx:lx + new_w] = out.astype(np.uint8)
+        else:
+            frame[ly:ly + new_h, lx:lx + new_w] = resized[:, :, :3]
 
     def _draw_button(self, frame, rect, label, active=False):
         x1, y1, x2, y2 = rect
@@ -270,7 +347,7 @@ class OpenCVCameraUI:
         btn_h = 21 if h <= 360 else 34
         first_row_y = self.lang_title_y + 10
 
-        langs = ["English", "Telugu", "Hindi", "French", "Spanish"]
+        langs = ["English", "Telugu", "Hindi", "French", "Spanish", "German"]
         for i, lang in enumerate(langs):
             col = i % 2
             row = i // 2
@@ -345,9 +422,11 @@ class OpenCVCameraUI:
 
         h, w = frame.shape[:2]
         panel_x = self.camera_view_w
+        panel_w = w - panel_x
 
         cv2.rectangle(frame, (panel_x, 0), (w - 1, h - 1), self.colors["panel_bg"], -1)
         cv2.line(frame, (panel_x, 0), (panel_x, h - 1), self.colors["card_border"], 1)
+        self._draw_logo(frame, panel_x, panel_w)
 
         cv2.putText(frame, "Stored Buffer", (panel_x + 10, 22), cv2.FONT_HERSHEY_SIMPLEX, self.title_font, self.colors["header"], 1, cv2.LINE_AA)
         cv2.rectangle(frame, (panel_x + 10, self.buffer_top), (w - 10, self.buffer_bottom), self.colors["card_bg"], -1)

@@ -237,6 +237,7 @@ def normalize(landmarks):
 VOICE_FILE = "voice.mp3"
 VOICE_NAME = "en-US-JennyNeural"
 VERBOSE_DETECTIONS = True
+SENTENCE_GAP_SECONDS = 0.5
 
 LANGUAGE_TO_VOICE = {
     "English": "en-US-JennyNeural",
@@ -244,6 +245,7 @@ LANGUAGE_TO_VOICE = {
     "Hindi": "hi-IN-SwaraNeural",
     "French": "fr-FR-DeniseNeural",
     "Spanish": "es-ES-ElviraNeural",
+    "German": "de-DE-KatjaNeural",
 }
 LANGUAGE_TO_CODE = {
     "English": "en",
@@ -251,6 +253,7 @@ LANGUAGE_TO_CODE = {
     "Hindi": "hi",
     "French": "fr",
     "Spanish": "es",
+    "German": "de",
 }
 selected_language = "English"
 ui_status = "Idle"
@@ -300,6 +303,44 @@ def request_exit():
     set_status("Exiting")
 
 
+def build_sentence_from_signs(sign_lines):
+    # Convert dataset-style tokens like HELLO_WORLD into natural spoken text.
+    normalized = [token.replace("_", " ").strip() for token in sign_lines if token and token.strip()]
+    if len(normalized) > 1:
+        sentence = ". ".join(normalized)
+    elif normalized:
+        sentence = normalized[0]
+    else:
+        sentence = ""
+    sentence = re.sub(r"\s+", " ", sentence).strip()
+    return sentence
+
+
+def split_text_into_sentences(text):
+    parts = [p.strip() for p in re.split(r"[.!?]+", text) if p.strip()]
+    return parts if parts else ([text.strip()] if text.strip() else [])
+
+
+def collapse_spelled_acronyms(text):
+    # Example: "H A SH" -> "HASH", keeps model/team names from sounding broken.
+    return re.sub(r"\b(?:[A-Z]\s+){2,}[A-Z]\b", lambda m: m.group(0).replace(" ", ""), text)
+
+
+def normalize_for_translation(text):
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = collapse_spelled_acronyms(cleaned)
+
+    # Sign labels are often ALL CAPS; translating lowercase yields better quality.
+    letters = re.sub(r"[^A-Za-z]", "", cleaned)
+    if letters and letters.isupper():
+        cleaned = cleaned.lower()
+        cleaned = re.sub(r"\bi\b", "I", cleaned)
+        if cleaned:
+            cleaned = cleaned[0].upper() + cleaned[1:]
+
+    return cleaned
+
+
 def run_now_without_confirm():
     set_status("Processing")
 
@@ -314,7 +355,7 @@ def run_now_without_confirm():
         set_status("Idle")
         return
 
-    sentence = " ".join(output_lines)
+    sentence = build_sentence_from_signs(output_lines)
     print("Run output sentence:", sentence)
     last_output_buffer_lines[:] = output_lines
     speak(sentence)
@@ -451,47 +492,70 @@ def cache_file_path(text, voice):
 async def speak_async(text):
     if not text:
         return
-
-    translated_text = translate_text_for_language(text, selected_language)
-    if translated_text != text:
-        print(f"Translated ({selected_language}): {translated_text}")
-
     voice = LANGUAGE_TO_VOICE.get(selected_language, VOICE_NAME)
-    cached_path = cache_file_path(translated_text, voice)
 
-    print(f"TTS: start -> {translated_text}")
-
-    # Fast path: if phrase was spoken before, play cached audio instantly.
-    if os.path.exists(cached_path):
-        print("TTS: cache hit")
-        if play_audio_file(cached_path):
-            print("TTS: done")
-            return
-
-    # Lowest-latency first attempt: stream directly to player.
-    if play_with_edge_playback(translated_text):
-        print("TTS: done")
+    # Split first, then translate each sentence for better language quality.
+    source_chunks = split_text_into_sentences(text)
+    if not source_chunks:
         return
 
-    communicate = edge_tts.Communicate(text=translated_text, voice=voice)
-    temp_path = f"{cached_path}.tmp"
-    try:
-        print("TTS: generating mp3 with edge-tts...")
-        await communicate.save(temp_path)
-        os.replace(temp_path, cached_path)
-        if not play_audio_file(cached_path):
-            print("Audio playback failed: no usable player found.")
+    if selected_language == "English":
+        translated_chunks = [normalize_for_translation(c) for c in source_chunks]
+    else:
+        # Faster path: one translation call for the whole text.
+        prepared_chunks = [normalize_for_translation(c) for c in source_chunks]
+        delimiter = " ||| "
+        prepared_full = delimiter.join(prepared_chunks)
+        translated_full = translate_text_for_language(prepared_full, selected_language)
+
+        if "|||" in translated_full:
+            translated_chunks = [c.strip() for c in translated_full.split("|||") if c.strip()]
         else:
-            print("TTS: playback done")
-    except Exception as exc:
-        print(f"TTS failed: {exc}")
-    finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
-        print("TTS: done")
+            translated_chunks = split_text_into_sentences(translated_full)
+
+        if not translated_chunks:
+            translated_chunks = [translated_full]
+
+        print(f"Translated ({selected_language}): {' '.join(translated_chunks)}")
+
+    for idx, chunk in enumerate(translated_chunks):
+        if idx > 0:
+            await asyncio.sleep(SENTENCE_GAP_SECONDS)
+
+        cached_path = cache_file_path(chunk, voice)
+        print(f"TTS: start -> {chunk}")
+
+        # Fast path: if phrase was spoken before, play cached audio instantly.
+        if os.path.exists(cached_path):
+            print("TTS: cache hit")
+            if play_audio_file(cached_path):
+                print("TTS: done")
+                continue
+
+        # Lowest-latency first attempt: stream directly to player.
+        if play_with_edge_playback(chunk):
+            print("TTS: done")
+            continue
+
+        communicate = edge_tts.Communicate(text=chunk, voice=voice)
+        temp_path = f"{cached_path}.tmp"
+        try:
+            print("TTS: generating mp3 with edge-tts...")
+            await communicate.save(temp_path)
+            os.replace(temp_path, cached_path)
+            if not play_audio_file(cached_path):
+                print("Audio playback failed: no usable player found.")
+            else:
+                print("TTS: playback done")
+        except Exception as exc:
+            print(f"TTS failed: {exc}")
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            print("TTS: done")
 
 
 def speak(text):
@@ -590,7 +654,7 @@ while True:
                             output_lines = stored_buffer_lines[-8:]
 
                         if output_lines:
-                            sentence = " ".join(output_lines)
+                            sentence = build_sentence_from_signs(output_lines)
                             print("Output sentence:", sentence)
                             last_output_buffer_lines[:] = output_lines
                             speak(sentence)
