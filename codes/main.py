@@ -238,6 +238,13 @@ VOICE_FILE = "voice.mp3"
 VOICE_NAME = "en-US-JennyNeural"
 VERBOSE_DETECTIONS = True
 SENTENCE_GAP_SECONDS = 0.5
+AUDIO_BOOST_PERCENT = 175
+AUDIO_BOOST_MULTIPLIER = 1.0 + (AUDIO_BOOST_PERCENT / 100.0)
+TTS_RATE_PERCENT = -10
+
+
+def tts_percent_str(value):
+    return f"{value:+d}%"
 
 LANGUAGE_TO_VOICE = {
     "English": "en-US-JennyNeural",
@@ -402,7 +409,16 @@ def play_audio_file(path):
     if ffplay:
         try:
             proc = subprocess.run(
-                [ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+                [
+                    ffplay,
+                    "-nodisp",
+                    "-autoexit",
+                    "-loglevel",
+                    "quiet",
+                    "-af",
+                    f"volume={AUDIO_BOOST_MULTIPLIER}",
+                    path,
+                ],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -417,7 +433,15 @@ def play_audio_file(path):
     if cvlc:
         try:
             proc = subprocess.run(
-                [cvlc, "--play-and-exit", "--intf", "dummy", path],
+                [
+                    cvlc,
+                    "--play-and-exit",
+                    "--intf",
+                    "dummy",
+                    "--gain",
+                    str(AUDIO_BOOST_MULTIPLIER),
+                    path,
+                ],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -432,7 +456,13 @@ def play_audio_file(path):
     if mpg123:
         try:
             proc = subprocess.run(
-                [mpg123, "-q", path],
+                [
+                    mpg123,
+                    "-q",
+                    "-f",
+                    str(int(32768 * AUDIO_BOOST_MULTIPLIER)),
+                    path,
+                ],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -468,7 +498,9 @@ def play_with_edge_playback(text):
                 "--voice",
                 LANGUAGE_TO_VOICE.get(selected_language, VOICE_NAME),
                 "--rate",
-                "+20%",
+                tts_percent_str(TTS_RATE_PERCENT),
+                "--volume",
+                f"+{AUDIO_BOOST_PERCENT}%",
             ],
             check=False,
             stdout=subprocess.DEVNULL,
@@ -485,7 +517,9 @@ def play_with_edge_playback(text):
 
 
 def cache_file_path(text, voice):
-    key = hashlib.sha1(f"{voice}|{text}".encode("utf-8")).hexdigest()
+    key = hashlib.sha1(
+        f"{voice}|{AUDIO_BOOST_PERCENT}|{TTS_RATE_PERCENT}|{text}".encode("utf-8")
+    ).hexdigest()
     return os.path.join(TTS_CACHE_DIR, f"{key}.mp3")
 
 
@@ -537,7 +571,12 @@ async def speak_async(text):
             print("TTS: done")
             continue
 
-        communicate = edge_tts.Communicate(text=chunk, voice=voice)
+        communicate = edge_tts.Communicate(
+            text=chunk,
+            voice=voice,
+            rate=tts_percent_str(TTS_RATE_PERCENT),
+            volume=f"+{AUDIO_BOOST_PERCENT}%",
+        )
         temp_path = f"{cached_path}.tmp"
         try:
             print("TTS: generating mp3 with edge-tts...")
