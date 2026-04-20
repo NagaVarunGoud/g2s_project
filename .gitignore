@@ -1,5 +1,10 @@
 g2s_env/
 __pycache__/
 *.pyc
-g2s_env/
-.tts_cache
+
+# Runtime/cache outputs
+codes/logs/
+codes/.tts_cache/
+
+# Legacy cache path fallback
+.tts_cache/

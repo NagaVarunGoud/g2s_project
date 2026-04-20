@@ -12,6 +12,7 @@ edge-tts==7.2.7
 edge-playback==0.3.5
 playsound==1.2.2
 sounddevice==0.4.6
+SpeechRecognition==3.10.4
 
 # Language Translation
 deep-translator==1.11.4
