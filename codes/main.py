@@ -237,8 +237,8 @@ def normalize(landmarks):
 VOICE_FILE = "voice.mp3"
 VOICE_NAME = "en-US-JennyNeural"
 VERBOSE_DETECTIONS = True
-SENTENCE_GAP_SECONDS = 0.5
-AUDIO_BOOST_PERCENT = 175
+SENTENCE_GAP_SECONDS = 0.0
+AUDIO_BOOST_PERCENT = 306
 AUDIO_BOOST_MULTIPLIER = 1.0 + (AUDIO_BOOST_PERCENT / 100.0)
 TTS_RATE_PERCENT = -10
 
@@ -324,22 +324,34 @@ def build_sentence_from_signs(sign_lines):
 
 
 def split_text_into_sentences(text):
+    # Fast path: single line (most gesture outputs)
+    if "." not in text and "!" not in text and "?" not in text:
+        return [text.strip()] if text.strip() else []
+    # Multi-sentence case
     parts = [p.strip() for p in re.split(r"[.!?]+", text) if p.strip()]
     return parts if parts else ([text.strip()] if text.strip() else [])
 
 
 def collapse_spelled_acronyms(text):
     # Example: "H A SH" -> "HASH", keeps model/team names from sounding broken.
+    # Only process if spaces are present (fast check)
+    if " " not in text:
+        return text
     return re.sub(r"\b(?:[A-Z]\s+){2,}[A-Z]\b", lambda m: m.group(0).replace(" ", ""), text)
 
 
 def normalize_for_translation(text):
     cleaned = re.sub(r"\s+", " ", text).strip()
+    
+    # Fast path: already normalized
+    if not cleaned or cleaned[0].islower():
+        return cleaned
+    
     cleaned = collapse_spelled_acronyms(cleaned)
 
     # Sign labels are often ALL CAPS; translating lowercase yields better quality.
     letters = re.sub(r"[^A-Za-z]", "", cleaned)
-    if letters and letters.isupper():
+    if letters and letters.isupper() and len(letters) > 1:
         cleaned = cleaned.lower()
         cleaned = re.sub(r"\bi\b", "I", cleaned)
         if cleaned:
@@ -559,17 +571,17 @@ async def speak_async(text):
         cached_path = cache_file_path(chunk, voice)
         print(f"TTS: start -> {chunk}")
 
+        # Lowest-latency FIRST attempt: stream directly to player without waiting for file.
+        if play_with_edge_playback(chunk):
+            print("TTS: done")
+            continue
+
         # Fast path: if phrase was spoken before, play cached audio instantly.
         if os.path.exists(cached_path):
             print("TTS: cache hit")
             if play_audio_file(cached_path):
                 print("TTS: done")
                 continue
-
-        # Lowest-latency first attempt: stream directly to player.
-        if play_with_edge_playback(chunk):
-            print("TTS: done")
-            continue
 
         communicate = edge_tts.Communicate(
             text=chunk,
@@ -638,7 +650,7 @@ last_detection = False
 fullscreen_applied = False
 
 # Process more often for smoother detection.
-PROCESS_EVERY_N_FRAMES = 2
+PROCESS_EVERY_N_FRAMES = 1
 MAX_MISSED_DETECTIONS = 3
 missed_detections = 0
 frame_count = 0
