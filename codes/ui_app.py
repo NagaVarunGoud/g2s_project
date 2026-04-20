@@ -8,6 +8,13 @@ from tkinter import ttk
 import cv2
 import numpy as np
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -365,8 +372,8 @@ class OpenCVCameraUI:
 
         self.ui_buttons.append(
             {
-                "label": "Reload",
-                "action": "reload",
+                "label": "STT",
+                "action": "stt",
                 "value": None,
                 "rect": (inner_left, action_y1, inner_left + action_btn_w, action_y2),
             }
@@ -449,6 +456,365 @@ class OpenCVCameraUI:
 
         cv2.putText(frame, f"Status: {ui_status}", (panel_x + 10, h - 24), cv2.FONT_HERSHEY_SIMPLEX, self.status_font, (174, 235, 190), 1, cv2.LINE_AA)
         cv2.putText(frame, f"Lang: {selected_language}", (panel_x + 10, h - 8), cv2.FONT_HERSHEY_SIMPLEX, self.status_font, self.colors["muted"], 1, cv2.LINE_AA)
+
+    def handle_mouse(self, event, x, y, on_action):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+
+        for btn in self.ui_buttons:
+            x1, y1, x2, y2 = btn["rect"]
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                on_action(btn["action"], btn.get("value"))
+                break
+
+
+class OpenCVSTTUI:
+    """Standalone STT screen UI shown after pressing the STT button."""
+
+    def __init__(self, view_w=800, view_h=600):
+        self.view_w = view_w
+        self.view_h = view_h
+        self.ui_buttons = []
+        self.colors = {
+            "bg_top": (22, 30, 37),
+            "bg_bottom": (13, 17, 22),
+            "card": (24, 34, 44),
+            "card_border": (92, 114, 126),
+            "text": (228, 236, 241),
+            "muted": (164, 183, 194),
+            "btn": (45, 61, 72),
+            "btn_active": (46, 140, 84),
+            "btn_border": (110, 131, 142),
+        }
+        self.text_card_rect = (0, 0, 0, 0)
+        self.title_font = 0.88
+        self.subtitle_font = 0.52
+        self.text_font = 0.72
+        self.status_font = 0.52
+        self._font_cache = {}
+        self._font_paths = {
+            "English": [
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ],
+            "French": [
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ],
+            "Spanish": [
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ],
+            "German": [
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ],
+            "Hindi": [
+                "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            ],
+            "Telugu": [
+                "/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            ],
+        }
+        if Image is None or ImageDraw is None or ImageFont is None:
+            print("STT UI: Pillow unavailable, complex scripts may not render correctly.")
+        else:
+            print("STT UI: Pillow Unicode renderer enabled.")
+        self._rebuild_buttons()
+
+    def _draw_gradient_bg(self, frame):
+        h, w = frame.shape[:2]
+        top = np.array(self.colors["bg_top"], dtype=np.float32)
+        bottom = np.array(self.colors["bg_bottom"], dtype=np.float32)
+        for y in range(h):
+            t = y / max(h - 1, 1)
+            row = (1.0 - t) * top + t * bottom
+            frame[y, :, :] = row.astype(np.uint8)
+
+    def _draw_button(self, frame, rect, label, active=False):
+        x1, y1, x2, y2 = rect
+        color = self.colors["btn_active"] if active else self.colors["btn"]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), self.colors["btn_border"], 1)
+
+        font_scale = self.text_font
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        while tw > (x2 - x1 - 10) and font_scale > 0.38:
+            font_scale -= 0.03
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+
+        tx = x1 + max(4, (x2 - x1 - tw) // 2)
+        ty = y1 + ((y2 - y1 + th) // 2)
+        cv2.putText(
+            frame,
+            label,
+            (tx, ty),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (245, 248, 250),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _wrap_text(self, text, max_width, font_scale):
+        words = text.split()
+        if not words:
+            return [""]
+
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            (cand_w, _), _ = cv2.getTextSize(candidate, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+            if cand_w <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
+
+    def _get_font(self, language, font_px):
+        if ImageFont is None:
+            return None
+
+        key = (language, int(font_px))
+        cached = self._font_cache.get(key)
+        if cached is not None:
+            return cached
+
+        candidates = self._font_paths.get(language, []) + [
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                try:
+                    font = ImageFont.truetype(path, max(12, int(font_px)))
+                    self._font_cache[key] = font
+                    return font
+                except Exception:
+                    continue
+        return None
+
+    def _text_width(self, text, font_scale, language):
+        if Image is not None and ImageDraw is not None and ImageFont is not None:
+            font = self._get_font(language, 36 * font_scale)
+            if font is not None:
+                dummy = Image.new("RGB", (2, 2))
+                draw = ImageDraw.Draw(dummy)
+                bbox = draw.textbbox((0, 0), text, font=font)
+                return max(0, bbox[2] - bbox[0])
+
+        (w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        return w
+
+    def _wrap_text_for_language(self, text, max_width, font_scale, language):
+        words = text.split()
+        if not words:
+            return [""]
+
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if self._text_width(candidate, font_scale, language) <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
+
+    def _draw_multilingual_lines(self, frame, lines, x, y, line_height, language):
+        if Image is None or ImageDraw is None or ImageFont is None:
+            for idx, ln in enumerate(lines):
+                cv2.putText(
+                    frame,
+                    ln,
+                    (x, y + idx * line_height),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    self.text_font,
+                    self.colors["text"],
+                    1,
+                    cv2.LINE_AA,
+                )
+            return
+
+        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+        font = self._get_font(language, 36 * self.text_font)
+        if font is None:
+            for idx, ln in enumerate(lines):
+                cv2.putText(
+                    frame,
+                    ln,
+                    (x, y + idx * line_height),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    self.text_font,
+                    self.colors["text"],
+                    1,
+                    cv2.LINE_AA,
+                )
+            return
+
+        # Convert BGR -> RGB for PIL draw color.
+        rgb = (self.colors["text"][2], self.colors["text"][1], self.colors["text"][0])
+        for idx, ln in enumerate(lines):
+            draw.text((x, y + idx * line_height), ln, font=font, fill=rgb)
+
+        frame[:, :, :] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    def _rebuild_buttons(self):
+        self.ui_buttons = []
+        w = self.view_w
+        h = self.view_h
+
+        is_small = h <= 500 or w <= 900
+        self.title_font = 0.68 if is_small else 0.90
+        self.subtitle_font = 0.42 if is_small else 0.56
+        self.text_font = 0.64 if is_small else 0.82
+        self.status_font = 0.45 if is_small else 0.52
+
+        languages = ["English", "Telugu", "Hindi", "French", "Spanish", "German"]
+        gap = 5 if is_small else 8
+        margin_x = 14 if is_small else 22
+        usable_w = max(1, w - 2 * margin_x - 5 * gap)
+        btn_w = max(44, usable_w // 6)
+        btn_h = 24 if is_small else 32
+        start_x = max(margin_x, (w - (6 * btn_w + 5 * gap)) // 2)
+        start_y = 54 if is_small else 70
+
+        for idx, lang in enumerate(languages):
+            x1 = start_x + idx * (btn_w + gap)
+            y1 = start_y
+            x2 = x1 + btn_w
+            y2 = y1 + btn_h
+            self.ui_buttons.append(
+                {"label": lang, "action": "lang", "value": lang, "rect": (x1, y1, x2, y2)}
+            )
+
+        action_gap = 10
+        action_h = 34 if is_small else 40
+        back_w = 104 if is_small else 128
+        mic_w = 130 if is_small else 160
+        y2 = h - 20
+        y1 = y2 - action_h
+
+        x2 = w - 22
+        x1 = x2 - back_w
+        mic_x2 = x1 - action_gap
+        mic_x1 = mic_x2 - mic_w
+        if mic_x1 < margin_x:
+            mic_x1 = margin_x
+            mic_x2 = min(x1 - action_gap, mic_x1 + mic_w)
+
+        self.ui_buttons.append(
+            {"label": "Mic: Start", "action": "toggle_mic", "value": None, "rect": (mic_x1, y1, mic_x2, y2)}
+        )
+        self.ui_buttons.append(
+            {"label": "Back", "action": "back_camera", "value": None, "rect": (x1, y1, x2, y2)}
+        )
+
+        card_x1 = margin_x
+        card_x2 = w - margin_x
+        card_y1 = start_y + btn_h + 18
+        card_y2 = y1 - 12
+        if card_y2 - card_y1 < 120:
+            card_y1 = max(start_y + btn_h + 8, card_y2 - 120)
+        self.text_card_rect = (card_x1, card_y1, card_x2, card_y2)
+
+    def draw(self, frame, selected_language, stt_text, ui_status, mic_listening=False, mic_label="Mic: Auto", text_language="English"):
+        h, w = frame.shape[:2]
+        if h != self.view_h or w != self.view_w:
+            self.view_h = h
+            self.view_w = w
+            self._rebuild_buttons()
+
+        is_small = h <= 500 or w <= 900
+
+        self._draw_gradient_bg(frame)
+
+        cv2.putText(
+            frame,
+            "Speech to Text (STT)",
+            (24, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self.title_font,
+            self.colors["text"],
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "Select language and speak into the microphone",
+            (24, 62),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self.subtitle_font,
+            self.colors["muted"],
+            1,
+            cv2.LINE_AA,
+        )
+
+        for btn in self.ui_buttons:
+            label = btn["label"]
+            if btn["action"] == "toggle_mic":
+                label = "Mic: Stop" if mic_listening else "Mic: Start"
+            active = (btn["action"] == "lang" and btn["value"] == selected_language) or (
+                btn["action"] == "toggle_mic" and mic_listening
+            )
+            self._draw_button(frame, btn["rect"], label, active=active)
+
+        card_x1, card_y1, card_x2, card_y2 = self.text_card_rect
+        cv2.rectangle(frame, (card_x1, card_y1), (card_x2, card_y2), self.colors["card"], -1)
+        cv2.rectangle(frame, (card_x1, card_y1), (card_x2, card_y2), self.colors["card_border"], 1)
+
+        cv2.putText(
+            frame,
+            "Converted Text",
+            (card_x1 + 10, card_y1 + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.56 if is_small else 0.66,
+            self.colors["text"],
+            1,
+            cv2.LINE_AA,
+        )
+
+        visible_text = stt_text.strip() if stt_text.strip() else "Waiting for speech input..."
+        text_x = card_x1 + 10
+        max_w = max(120, card_x2 - card_x1 - 20)
+        wrapped = self._wrap_text_for_language(visible_text, max_w, self.text_font, text_language)
+        line_height = 28 if is_small else 34
+        total_height = len(wrapped) * line_height
+        start_y = max(card_y1 + 60, card_y1 + ((card_y2 - card_y1) - total_height) // 2 + 18)
+        text_y = start_y
+        max_lines = max(1, (card_y2 - start_y - 10) // line_height)
+        self._draw_multilingual_lines(frame, wrapped[:max_lines], text_x, text_y, line_height, text_language)
+
+        cv2.putText(
+            frame,
+            f"Status: {ui_status}",
+            (24, h - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self.status_font,
+            (174, 235, 190),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            mic_label,
+            (24, h - 42),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self.status_font,
+            self.colors["muted"],
+            1,
+            cv2.LINE_AA,
+        )
 
     def handle_mouse(self, event, x, y, on_action):
         if event != cv2.EVENT_LBUTTONDOWN:
